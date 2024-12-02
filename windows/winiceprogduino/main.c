@@ -138,7 +138,7 @@ int set_interface_attribs (char *pname)
 	return 0;
 }
 
-void usleep(unsigned long int val)
+void usleep2(unsigned long int val)
 {
     LARGE_INTEGER ticksPerSecond;
 	LARGE_INTEGER tick;
@@ -222,13 +222,13 @@ uint32_t addr;
 for (to=0;to<5000;to++)
 {
 serial_read(0);
-usleep(50);	
+usleep2(50);	
 
 if (newframe){
 
 	rxp = 0;
 	newframe = false;
-	usleep(10);
+	usleep2(10);
 
 	     
 				if ((rxframe[0]==READ_ID) && (cmd == READ_ID)){
@@ -303,8 +303,8 @@ void flash_64kB_sector_erase(int addr)
  
     mode = true;
 	startframe(SEC_ERASE);
+	addbyte(addr>>16);
 	addbyte(addr>>8);
-	addbyte(addr>>0);
 	sendframe();
     waitframe(READY);
     fprintf(stderr, "erased\n");
@@ -402,7 +402,14 @@ void help(const char *progname)
 	fprintf(stderr, "        do not erase flash before writing\n");
 	fprintf(stderr, "\n");
 
- 	
+
+	fprintf(stderr, "    -o<offset in bytes>\n");
+	fprintf(stderr, "        start address for write [default: 0]\n");
+	fprintf(stderr, "        (append 'k' to the argument for size in kilobytes,\n");
+	fprintf(stderr, "        or 'M' for size in megabytes)\n");
+	fprintf(stderr, "        this feature works not with all options.\n");
+	fprintf(stderr, "        tested with -b, -v\n");
+	fprintf(stderr, "\n"); 	
 	fprintf(stderr, "    -t\n");
 	fprintf(stderr, "        just read the flash ID sequence\n");
 	fprintf(stderr, "\n");
@@ -428,7 +435,7 @@ while (1)
 	fcs = 0;	
 	break;
 	}	 
-	usleep(5);
+	usleep2(5);
    uint8_t buf[1];
  n = 0;
 
@@ -532,11 +539,13 @@ int main(int argc, char **argv)
 	const char *filename = NULL;
 	const char *devstr = NULL;
 
+	int rw_offset = 0;
 	int opt;
+	char *endptr;
 
  		
 char *portname = SerialPort;
-	while ((opt = getopt(argc, argv, "I:rcbntvwfeh")) != -1)
+	while ((opt = getopt(argc, argv, "I:o:rcbntvwfeh")) != -1)
  
 
 	{
@@ -589,6 +598,19 @@ char *portname = SerialPort;
 		case 'w':
 			noverify = true;
 			break;			
+		case 'o': /* set address offset */
+			rw_offset = strtol(optarg, &endptr, 0);
+			if (*endptr == '\0')
+				/* ok */;
+			else if (!strcmp(endptr, "k"))
+				rw_offset *= 1024;
+			else if (!strcmp(endptr, "M"))
+				rw_offset *= 1024 * 1024;
+			else {
+				fprintf(stderr, "'%s' is not a valid offset\n", optarg);
+				return EXIT_FAILURE;
+			}
+			break;
 		default:
 			help(argv[0]);
 		}
@@ -608,13 +630,13 @@ char *portname = SerialPort;
 
 	filename = argv[optind];
 
-	bulk_erase = true;  // comment this line if you do not want to bulk erase by default
+	//bulk_erase = true;  // comment this line if you do not want to bulk erase by default
 
  
 
 		   
 set_interface_attribs (portname);  // set speed to 57600 bps, 8n1 (no parity)
-				    usleep(100000);
+				    usleep2(100000);
 
 PurgeComm(hSerial, PURGE_RXCLEAR);
 PurgeComm(hSerial, PURGE_TXCLEAR);
@@ -665,7 +687,7 @@ PurgeComm(hSerial, PURGE_TXCLEAR);
 				
 					flash_bulk_erase();
 
-				    usleep(1000000);
+				    usleep2(1000000);
 				    flash_read_id();
 	
 				}
@@ -678,7 +700,10 @@ PurgeComm(hSerial, PURGE_TXCLEAR);
 					}
 
 					fprintf(stderr, "file size: %d\n", (int)st_buf.st_size);
-					for (addr = 0; addr < st_buf.st_size; addr += 0x10000) {
+					/* 64 k */
+					int begin_addr = rw_offset & ~0xffff;
+					int end_addr = (rw_offset + st_buf.st_size + 0xffff) & ~0xffff;
+					for (addr = begin_addr; addr < end_addr; addr += 0x10000) {
 					
 						flash_64kB_sector_erase(addr);
 						
@@ -693,15 +718,18 @@ PurgeComm(hSerial, PURGE_RXCLEAR);
 PurgeComm(hSerial, PURGE_TXCLEAR);
 
 				
-			for (addr = 0; true; addr += 256) {
+			/* page is 256 */
+			for (int rc, addr = 0; true; addr += rc) {
 				uint8_t buffer[256];
-				int rc = fread(buffer, 1, 256, f);
+				int page_size = 256 - (rw_offset + addr) % 256;
+				rc = fread(buffer, 1, page_size, f);
 
+				int offset_addr = addr + rw_offset;
 				if (rc <= 0) break;
 					if (verbose)
-					fprintf(stderr, "prog 0x%06X +0x%03X..\n", addr, rc);
+					fprintf(stderr, "prog 0x%06X +0x%03X..\n", offset_addr, rc);
 					else
-					fprintf(stderr, "\rprog 0x%06X +0x%03X..", addr, rc);
+					fprintf(stderr, "\rprog 0x%06X +0x%03X..", offset_addr, rc);
 				for (ccc=0;ccc<rc;ccc++){
 					if ((buffer[ccc] != 0xFF) || (ff_mode))
 						{
@@ -711,8 +739,8 @@ PurgeComm(hSerial, PURGE_TXCLEAR);
 						while(1){
 							
 						startframe(PROG);
-						addbyte(addr>>16);
-						addbyte(addr>>8);
+						addbyte(offset_addr>>16);
+						addbyte(offset_addr>>8);
 						for (x=0;x<rc;x++)
 							addbyte(buffer[x]);
 							
